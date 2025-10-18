@@ -63,6 +63,9 @@ const float ALPHA = 0.96f;
 const unsigned long MQTT_INTERVAL = 100; // 100ms마다 전송
 const unsigned long BLE_INTERVAL = 100;   // 100ms마다 BLE 전송
 
+// ───────── 함수 프로토타입 (앞으로 이동) ─────────
+void calibrateSensors();  // <-- 추가: IMUControlCallbacks에서 사용되므로 클래스 정의 전에 선언
+
 // ═══════════════════════════════════════════════════════
 // BLE 콜백 클래스
 // ═══════════════════════════════════════════════════════
@@ -132,7 +135,7 @@ class IMUControlCallbacks: public BLECharacteristicCallbacks {
       }
     } else if (command == "CALIBRATE") {
       Serial.println("IMU Calibration Requested");
-      calibrateSensors();
+      calibrateSensors(); // now visible thanks to the prototype above
       if (deviceConnected) {
         pIMUControlChar->setValue("CALIBRATED");
         pIMUControlChar->notify();
@@ -147,7 +150,6 @@ class IMUControlCallbacks: public BLECharacteristicCallbacks {
 float mapFloat(float x, float in_min, float in_max, float out_min, float out_max);
 void initBLE();
 void initMPU6050();
-void calibrateSensors();
 void scanWiFi();
 void tryConnect();
 void reconnectMQTT();
@@ -188,6 +190,8 @@ void setup() {
 // LOOP
 // ═══════════════════════════════════════════════════════
 void loop() {
+  unsigned long now = millis(); // <-- moved here so it's visible to all blocks in loop()
+
   // BLE WiFi 설정 처리
   if (needToScan) {
     needToScan = false;
@@ -207,7 +211,6 @@ void loop() {
     printAngles();
 
     // BLE로 센서 데이터 전송 (BLE 연결 시)
-    unsigned long now = millis();
     if (deviceConnected && (now - last_ble_send >= BLE_INTERVAL)) {
       last_ble_send = now;
       sendBLE();
