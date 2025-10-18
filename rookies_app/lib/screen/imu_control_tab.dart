@@ -91,6 +91,9 @@ class _IMUControlTabState extends State<IMUControlTab> {
         String command = imuEnabled ? "OFF" : "ON";
         await widget.imuControlChar!.write(utf8.encode(command));
         print('IMU toggle command sent: $command');
+        setState(() {
+          imuEnabled = !imuEnabled;
+        });
       } catch (e) {
         print('Toggle error: $e');
         showSnackBar("IMU 제어 실패: $e");
@@ -231,6 +234,35 @@ class _IMUControlTabState extends State<IMUControlTab> {
                   wrist,
                   Icons.arrow_downward,
                   Colors.orange,
+                ),
+              ],
+            ),
+          ),
+
+          // IMU Control Buttons
+          Padding(
+            padding: EdgeInsets.all(16),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                ElevatedButton(
+                  onPressed: toggleIMU,
+                  style: ElevatedButton.styleFrom(
+                    padding: EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    backgroundColor: imuEnabled ? Colors.red : Colors.green,
+                  ),
+                  child: Text(
+                    imuEnabled ? 'IMU 끄기' : 'IMU 켜기',
+                    style: TextStyle(fontSize: 16),
+                  ),
+                ),
+                ElevatedButton(
+                  onPressed: calibrateIMU,
+                  style: ElevatedButton.styleFrom(
+                    padding: EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    backgroundColor: Colors.blue,
+                  ),
+                  child: Text('센서 보정', style: TextStyle(fontSize: 16)),
                 ),
               ],
             ),

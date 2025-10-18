@@ -25,6 +25,7 @@ class _BluetoothScanScreenState extends State<BluetoothScanScreen> {
     await Permission.bluetoothScan.request();
     await Permission.bluetoothConnect.request();
     await Permission.location.request();
+    print('Permissions checked');
   }
 
   Future<void> loadPairedDevices() async {
@@ -34,6 +35,7 @@ class _BluetoothScanScreenState extends State<BluetoothScanScreen> {
       setState(() {
         pairedDeviceIds = saved;
       });
+      print('Loaded paired devices: $pairedDeviceIds');
     }
   }
 
@@ -43,6 +45,7 @@ class _BluetoothScanScreenState extends State<BluetoothScanScreen> {
       pairedDeviceIds.add(device.remoteId.toString());
       await prefs.setStringList('paired_esp32_devices', pairedDeviceIds);
       setState(() {});
+      print('Device saved: ${device.remoteId}');
     }
   }
 
@@ -51,20 +54,28 @@ class _BluetoothScanScreenState extends State<BluetoothScanScreen> {
     pairedDeviceIds.remove(deviceId);
     await prefs.setStringList('paired_esp32_devices', pairedDeviceIds);
     setState(() {});
+    print('Device removed: $deviceId');
   }
 
   Future<void> startScan() async {
+    if (isScanning) {
+      print('Scan already in progress');
+      return;
+    }
+
     setState(() {
       isScanning = true;
       scanResults.clear();
     });
 
+    print('Starting BLE scan...');
     FlutterBluePlus.startScan(timeout: Duration(seconds: 4));
 
     FlutterBluePlus.scanResults.listen((results) {
       setState(() {
         scanResults = results;
       });
+      print('Scan results updated: ${results.length} devices found');
     });
 
     await Future.delayed(Duration(seconds: 4));
@@ -73,6 +84,7 @@ class _BluetoothScanScreenState extends State<BluetoothScanScreen> {
     setState(() {
       isScanning = false;
     });
+    print('BLE scan stopped');
   }
 
   bool isPairedDevice(BluetoothDevice device) {
@@ -324,6 +336,7 @@ class _BluetoothScanScreenState extends State<BluetoothScanScreen> {
 
   Future<void> connectToDevice(BluetoothDevice device) async {
     try {
+      print('Attempting to connect to device: ${device.remoteId}');
       showDialog(
         context: context,
         barrierDismissible: false,
@@ -345,6 +358,7 @@ class _BluetoothScanScreenState extends State<BluetoothScanScreen> {
       );
 
       await device.connect(timeout: Duration(seconds: 10));
+      print('Connected to device: ${device.remoteId}');
       await savePairedDevice(device);
 
       Navigator.pop(context);
@@ -357,6 +371,7 @@ class _BluetoothScanScreenState extends State<BluetoothScanScreen> {
       );
     } catch (e) {
       Navigator.pop(context);
+      print('Connection failed: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('연결 실패: $e'), backgroundColor: Colors.red),
       );
