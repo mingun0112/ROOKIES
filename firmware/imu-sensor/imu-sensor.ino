@@ -134,11 +134,15 @@ class IMUControlCallbacks: public BLECharacteristicCallbacks {
         pIMUControlChar->notify();
       }
     } else if (command == "CALIBRATE") {
-      Serial.println("IMU Calibration Requested");
-      calibrateSensors(); // now visible thanks to the prototype above
-      if (deviceConnected) {
-        pIMUControlChar->setValue("CALIBRATED");
-        pIMUControlChar->notify();
+      if (imuEnabled) {  // 보정은 IMU가 활성화된 상태에서만 수행
+        Serial.println("IMU Calibration Requested");
+        calibrateSensors();
+        if (deviceConnected) {
+          pIMUControlChar->setValue("CALIBRATED");
+          pIMUControlChar->notify();
+        }
+      } else {
+        Serial.println("IMU is disabled. Calibration skipped.");
       }
     }
   }
@@ -190,7 +194,7 @@ void setup() {
 // LOOP
 // ═══════════════════════════════════════════════════════
 void loop() {
-  unsigned long now = millis(); // <-- moved here so it's visible to all blocks in loop()
+  unsigned long now = millis();
 
   // BLE WiFi 설정 처리
   if (needToScan) {
@@ -215,11 +219,15 @@ void loop() {
       last_ble_send = now;
       sendBLE();
     }
+  } else {
+    // IMU가 비활성화된 경우 상태를 출력
+    if (deviceConnected) {
+      Serial.println("IMU is disabled. No data is being processed.");
+    }
   }
 
   // WiFi 연결되었을 때만 MQTT 동작
   if (wifiConnected) {
-    // MQTT 연결 유지
     if (!client.connected()) {
       reconnectMQTT();
     }
