@@ -44,6 +44,7 @@ String wifiPassword = "";
 bool needToConnect = false;
 bool needToScan = false;
 bool wifiConnected = false;
+bool imuSensorAvailable = false;  // IMU 센서 존재 여부
 
 // ───────── MPU6050 변수 ─────────
 int16_t AcX, AcY, AcZ, GyX, GyY, GyZ;
@@ -51,6 +52,12 @@ float accel_angle_x, accel_angle_y;
 float gyro_x, gyro_y;
 float elbow = 0.0f;
 float wrist = 0.0f;
+
+// ───────── 더미 데이터 생성용 ─────────
+float dummyElbow = 45.0f;
+float dummyWrist = 0.0f;
+float dummyElbowDir = 1.0f;
+float dummyWristDir = 1.0f;
 
 // ───────── 시간 계산 ─────────
 unsigned long prev_time = 0;
@@ -66,6 +73,7 @@ const unsigned long BLE_INTERVAL = 100;
 // ───────── 함수 프로토타입 ─────────
 void calibrateSensors();
 void notifyIMUStatus(const char* status);
+void generateDummyData();
 
 // ╔═══════════════════════════════════════════════════════════╗
 // ║ BLE 콜백 클래스
@@ -122,7 +130,11 @@ class IMUControlCallbacks: public BLECharacteristicCallbacks {
 
     if (command == "ENABLED") {
       imuEnabled = true;
-      Serial.println("✅ IMU Enabled");
+      if (imuSensorAvailable) {
+        Serial.println("✅ IMU Enabled (Real Sensor)");
+      } else {
+        Serial.println("✅ IMU Enabled (Dummy Data Mode)");
+      }
       notifyIMUStatus("ENABLED");
       
     } else if (command == "DISABLED") {
@@ -133,7 +145,14 @@ class IMUControlCallbacks: public BLECharacteristicCallbacks {
     } else if (command == "CALIBRATE") {
       if (imuEnabled) {
         Serial.println("🔧 IMU Calibration Start");
-        calibrateSensors();
+        if (imuSensorAvailable) {
+          calibrateSensors();
+        } else {
+          // 더미 데이터 초기화
+          dummyElbow = 45.0f;
+          dummyWrist = 0.0f;
+          Serial.println("🔧 Dummy data reset");
+        }
         notifyIMUStatus("CALIBRATED");
         Serial.println("✅ IMU Calibration Done");
       } else {
@@ -180,6 +199,24 @@ void notifyIMUStatus(const char* status) {
   }
 }
 
+// 더미 데이터 생성 함수
+void generateDummyData() {
+  // 팔꿈치: 0~160도 사이를 왔다갔다
+  dummyElbow += dummyElbowDir * 2.0f;
+  if (dummyElbow >= 160.0f || dummyElbow <= 0.0f) {
+    dummyElbowDir *= -1;
+  }
+  
+  // 손목: -90~90도 사이를 왔다갔다
+  dummyWrist += dummyWristDir * 3.0f;
+  if (dummyWrist >= 90.0f || dummyWrist <= -90.0f) {
+    dummyWristDir *= -1;
+  }
+  
+  elbow = dummyElbow;
+  wrist = dummyWrist;
+}
+
 // ╔═══════════════════════════════════════════════════════════╗
 // ║ SETUP
 // ╚═══════════════════════════════════════════════════════════╝
@@ -191,11 +228,25 @@ void setup() {
   // BLE 초기화
   initBLE();
 
-  // MPU6050 초기화
+  // MPU6050 초기화 시도
   Wire.begin(21, 22);
   Wire.setClock(400000);
-  initMPU6050();
-  calibrateSensors();
+  
+  Wire.beginTransmission(MPU_ADDR);
+  byte error = Wire.endTransmission();
+  
+  if (error == 0) {
+    // IMU 센서가 연결되어 있음
+    imuSensorAvailable = true;
+    Serial.println("✅ MPU6050 detected");
+    initMPU6050();
+    calibrateSensors();
+  } else {
+    // IMU 센서가 없음 - 더미 데이터 모드
+    imuSensorAvailable = false;
+    Serial.println("⚠️ MPU6050 NOT detected - Using DUMMY DATA MODE");
+    Serial.println("   This is OK for testing app control!");
+  }
   
   prev_time = micros();
 
@@ -204,6 +255,10 @@ void setup() {
 
   Serial.println("✅ System Ready!");
   Serial.println("📱 Waiting for BLE connection...");
+  
+  if (!imuSensorAvailable) {
+    Serial.println("🎮 DUMMY DATA MODE - Sensor values will be simulated");
+  }
 }
 
 // ╔═══════════════════════════════════════════════════════════╗
@@ -225,18 +280,21 @@ void loop() {
 
   // IMU 활성화 상태에서만 센서 읽기 및 처리
   if (imuEnabled) {
-    readAccelGyro();
-    updateDeltaTime();
-    computeAngles();
+    if (imuSensorAvailable) {
+      // 실제 센서 데이터 읽기
+      readAccelGyro();
+      updateDeltaTime();
+      computeAngles();
+    } else {
+      // 더미 데이터 생성
+      generateDummyData();
+    }
     
     // BLE로 센서 데이터 전송 (BLE 연결 시)
     if (deviceConnected && (now - last_ble_send >= BLE_INTERVAL)) {
       last_ble_send = now;
       sendBLE();
     }
-    
-    // 시리얼 출력 (디버깅용, 주석 처리 가능)
-    // printAngles();
   }
 
   // WiFi 연결되었을 때만 MQTT 동작
@@ -491,9 +549,7 @@ void sendMQTT() {
   String payload = "{\"elbow\":" + String(pitch_corrected, 2) + 
                    ",\"wrist\":" + String(display_roll, 2) + "}";
   
-  if (client.publish(mqtt_topic, payload.c_str())) {
-    // MQTT 전송 성공 (로그 생략 가능)
-  }
+  client.publish(mqtt_topic, payload.c_str());
 }
 
 // ╔═══════════════════════════════════════════════════════════╗
@@ -552,8 +608,6 @@ void calibrateSensors() {
     delay(5);
   }
 
-  // 오프셋 적용하지 않고, 평균값만 계산
-  // (실제 보정은 computeAngles에서 적용)
   Serial.println("✅ Calibration done");
 }
 
@@ -603,34 +657,6 @@ void computeAngles() {
 
   elbow = ALPHA * tmp_angle_x + (1.0f - ALPHA) * accel_angle_x;
   wrist = ALPHA * tmp_angle_y + (1.0f - ALPHA) * accel_angle_y;
-}
-
-// ╔═══════════════════════════════════════════════════════════╗
-// ║ 각도 출력 (디버깅용)
-// ╚═══════════════════════════════════════════════════════════╝
-void printAngles() {
-  float pitch_corrected = elbow + 90.0f;
-  float p = pitch_corrected;
-  float weight_factor = 1.0f;
-
-  if      (p >= 0 && p < 10)   weight_factor = mapFloat(p, 0, 10, 10.0f, 4.0f);
-  else if (p >= 10 && p < 30)   weight_factor = mapFloat(p, 10, 30, 4.0f, 3.1f);
-  else if (p >= 30 && p < 40)   weight_factor = mapFloat(p, 30, 40, 3.1f, 2.3f);
-  else if (p >= 40 && p < 60)   weight_factor = mapFloat(p, 40, 60, 2.3f, 1.5f);
-  else if (p >= 60 && p < 80)   weight_factor = mapFloat(p, 60, 80, 1.5f, 9.0f/8.0f);
-  else if (p >= 80 && p < 100)  weight_factor = mapFloat(p, 80, 100, 9.0f/8.0f, 9.0f/8.0f);
-  else if (p >= 100 && p < 120) weight_factor = mapFloat(p, 100, 120, 9.0f/8.0f, 1.5f);
-  else if (p >= 120 && p < 140) weight_factor = mapFloat(p, 120, 140, 1.5f, 2.1f);
-  else if (p >= 140 && p < 160) weight_factor = mapFloat(p, 140, 160, 2.1f, 5.0f);
-  else                          weight_factor = 1.0f;
-
-  float display_roll = wrist * weight_factor;
-
-  Serial.print("Roll: ");
-  Serial.print(display_roll, 2);
-  Serial.print("°, Pitch: ");
-  Serial.print(pitch_corrected, 2);
-  Serial.println("°");
 }
 
 // ╔═══════════════════════════════════════════════════════════╗

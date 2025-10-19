@@ -139,7 +139,7 @@ class _IMUControlTabState extends State<IMUControlTab> {
       await widget.imuControlChar!.write(utf8.encode(command));
       print('✅ Command sent: $command');
 
-      // 낙관적 업데이트 (ESP32 응답을 기다리지 않음)
+      // 낙관적 업데이트
       setState(() {
         imuEnabled = !imuEnabled;
       });
