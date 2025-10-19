@@ -19,16 +19,39 @@ class _IMUControlTabState extends State<IMUControlTab> {
   double wrist = 0.0;
   StreamSubscription? sensorSubscription;
   StreamSubscription? controlSubscription;
+  bool isCalibrating = false;
+  bool isInitializing = true;
 
   @override
   void initState() {
     super.initState();
+    checkCharacteristics();
     setupNotifications();
   }
 
+  void checkCharacteristics() {
+    print('🔍 Checking characteristics...');
+    print('Sensor Data Char: ${widget.sensorDataChar != null ? "✓" : "✗"}');
+    print('IMU Control Char: ${widget.imuControlChar != null ? "✓" : "✗"}');
+
+    if (widget.sensorDataChar == null || widget.imuControlChar == null) {
+      setState(() {
+        isInitializing = false;
+      });
+    }
+  }
+
   Future<void> setupNotifications() async {
-    // 센서 데이터 구독
-    if (widget.sensorDataChar != null) {
+    if (widget.sensorDataChar == null || widget.imuControlChar == null) {
+      print('❌ One or more characteristics are null');
+      setState(() {
+        isInitializing = false;
+      });
+      return;
+    }
+
+    try {
+      // 센서 데이터 구독
       await widget.sensorDataChar!.setNotifyValue(true);
       sensorSubscription = widget.sensorDataChar!.lastValueStream.listen((
         value,
@@ -36,10 +59,9 @@ class _IMUControlTabState extends State<IMUControlTab> {
         String data = utf8.decode(value);
         parseSensorData(data);
       });
-    }
+      print('✅ Sensor data subscription set');
 
-    // IMU 제어 상태 구독
-    if (widget.imuControlChar != null) {
+      // IMU 제어 상태 구독
       await widget.imuControlChar!.setNotifyValue(true);
       controlSubscription = widget.imuControlChar!.lastValueStream.listen((
         value,
@@ -48,20 +70,33 @@ class _IMUControlTabState extends State<IMUControlTab> {
         print('IMU Status received: $status');
 
         setState(() {
-          if (status == "ON") {
+          if (status == "ENABLED") {
             imuEnabled = true;
-          } else if (status == "OFF") {
+            isCalibrating = false;
+          } else if (status == "DISABLED") {
             imuEnabled = false;
+            isCalibrating = false;
           } else if (status == "CALIBRATED") {
-            showSnackBar("센서 보정이 완료되었습니다!");
+            isCalibrating = false;
+            showSnackBar("✅ 센서 보정이 완료되었습니다!", Colors.green);
           }
         });
       });
+      print('✅ IMU control subscription set');
 
       // 초기 상태 확인
-      checkIMUStatus();
-    } else {
-      print('IMU Control Characteristic is null. Cannot set notifications.');
+      await Future.delayed(Duration(milliseconds: 500));
+      await checkIMUStatus();
+
+      setState(() {
+        isInitializing = false;
+      });
+    } catch (e) {
+      print('❌ Setup notifications error: $e');
+      setState(() {
+        isInitializing = false;
+      });
+      showSnackBar("❌ 알림 설정 실패: $e", Colors.red);
     }
   }
 
@@ -79,64 +114,83 @@ class _IMUControlTabState extends State<IMUControlTab> {
 
   Future<void> checkIMUStatus() async {
     if (widget.imuControlChar == null) {
-      print('IMU Control Characteristic is null. Check BLE connection.');
+      print('❌ IMU Control Characteristic is null');
       return;
     }
 
     try {
-      print('Requesting IMU status...');
+      print('📤 Requesting IMU status...');
       await widget.imuControlChar!.write(utf8.encode("STATUS"));
-      print('IMU status request sent successfully.');
+      print('✅ IMU status request sent');
     } catch (e) {
-      print('Error requesting IMU status: $e');
+      print('❌ Error requesting IMU status: $e');
     }
   }
 
   Future<void> toggleIMU() async {
     if (widget.imuControlChar == null) {
-      print('IMU Control Characteristic is null. Check BLE connection.');
+      showSnackBar("❌ IMU 제어를 사용할 수 없습니다", Colors.red);
       return;
     }
 
     try {
-      String command = imuEnabled ? "DISABLED" : "ENABLED"; // 명령어 수정
-      print('Sending IMU toggle command: $command');
+      String command = imuEnabled ? "DISABLED" : "ENABLED";
+      print('📤 Sending IMU toggle command: $command');
       await widget.imuControlChar!.write(utf8.encode(command));
-      print('IMU toggle command sent successfully: $command');
+      print('✅ Command sent: $command');
+
+      // 낙관적 업데이트 (ESP32 응답을 기다리지 않음)
       setState(() {
         imuEnabled = !imuEnabled;
       });
+
+      showSnackBar(
+        imuEnabled ? "✅ IMU 센서 활성화 요청" : "⏸️ IMU 센서 비활성화 요청",
+        imuEnabled ? Colors.green : Colors.orange,
+      );
     } catch (e) {
-      print('Error sending IMU toggle command: $e');
-      showSnackBar("IMU 제어 실패: $e");
+      print('❌ Toggle error: $e');
+      showSnackBar("❌ 명령 전송 실패: $e", Colors.red);
     }
   }
 
   Future<void> calibrateIMU() async {
     if (widget.imuControlChar == null) {
-      print('IMU Control Characteristic is null. Check BLE connection.');
+      showSnackBar("❌ IMU 제어를 사용할 수 없습니다", Colors.red);
       return;
     }
 
-    if (imuEnabled) {
-      showSnackBar("센서 보정 중... 기기를 평평한 곳에 놓아주세요!");
-      try {
-        print('Sending IMU calibration command: CALIBRATE');
-        await widget.imuControlChar!.write(utf8.encode("CALIBRATE"));
-        print('IMU calibration command sent successfully.');
-      } catch (e) {
-        print('Error sending IMU calibration command: $e');
-        showSnackBar("보정 실패: $e");
-      }
-    } else {
-      print('IMU is disabled. Cannot calibrate.');
-      showSnackBar("IMU가 비활성화 상태입니다. 활성화 후 보정하세요.");
+    if (!imuEnabled) {
+      showSnackBar("⚠️ IMU를 먼저 활성화해주세요", Colors.orange);
+      return;
+    }
+
+    setState(() {
+      isCalibrating = true;
+    });
+
+    showSnackBar("🔧 센서 보정 중... 기기를 평평한 곳에 놓아주세요!", Colors.blue);
+
+    try {
+      print('📤 Sending calibration command: CALIBRATE');
+      await widget.imuControlChar!.write(utf8.encode("CALIBRATE"));
+      print('✅ Calibration command sent');
+    } catch (e) {
+      print('❌ Calibration error: $e');
+      setState(() {
+        isCalibrating = false;
+      });
+      showSnackBar("❌ 보정 실패: $e", Colors.red);
     }
   }
 
-  void showSnackBar(String message) {
+  void showSnackBar(String message, Color backgroundColor) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), duration: Duration(seconds: 2)),
+      SnackBar(
+        content: Text(message),
+        backgroundColor: backgroundColor,
+        duration: Duration(seconds: 2),
+      ),
     );
   }
 
@@ -151,8 +205,62 @@ class _IMUControlTabState extends State<IMUControlTab> {
 
   @override
   Widget build(BuildContext context) {
+    // Characteristic이 null인 경우 에러 표시
+    if (widget.sensorDataChar == null || widget.imuControlChar == null) {
+      return Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.bluetooth_disabled, size: 64, color: Colors.red),
+              SizedBox(height: 16),
+              Text(
+                'IMU 제어를 사용할 수 없습니다',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.red[700],
+                ),
+                textAlign: TextAlign.center,
+              ),
+              SizedBox(height: 8),
+              Text(
+                'ESP32 펌웨어에 IMU 기능이\n포함되어 있는지 확인해주세요.',
+                style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                textAlign: TextAlign.center,
+              ),
+              SizedBox(height: 16),
+              if (widget.sensorDataChar == null)
+                Text(
+                  '❌ Sensor Data Characteristic',
+                  style: TextStyle(fontSize: 12, color: Colors.red),
+                ),
+              if (widget.imuControlChar == null)
+                Text(
+                  '❌ IMU Control Characteristic',
+                  style: TextStyle(fontSize: 12, color: Colors.red),
+                ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (isInitializing) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('IMU 초기화 중...'),
+          ],
+        ),
+      );
+    }
+
     return SingleChildScrollView(
-      // Wrap content in a scrollable view
       child: Column(
         children: [
           // IMU 제어 카드
@@ -190,9 +298,7 @@ class _IMUControlTabState extends State<IMUControlTab> {
                       ),
                       Switch(
                         value: imuEnabled,
-                        onChanged: (value) async {
-                          await toggleIMU(); // Ensure toggleIMU is awaited
-                        },
+                        onChanged: (value) => toggleIMU(),
                         activeColor: Colors.blue,
                       ),
                     ],
@@ -235,99 +341,92 @@ class _IMUControlTabState extends State<IMUControlTab> {
           ),
 
           // 센서 데이터 표시
-          Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                // Elbow 데이터
-                buildSensorCard(
-                  '팔꿈치 각도',
-                  elbow,
-                  Icons.arrow_upward,
-                  Colors.blue,
-                ),
-                SizedBox(height: 16),
-                // Wrist 데이터
-                buildSensorCard(
-                  '손목 각도',
-                  wrist,
-                  Icons.arrow_downward,
-                  Colors.orange,
-                ),
-              ],
+          if (imuEnabled) ...[
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: Column(
+                children: [
+                  // Elbow 데이터
+                  buildSensorCard(
+                    '팔꿈치 각도',
+                    elbow,
+                    Icons.arrow_upward,
+                    Colors.blue,
+                  ),
+                  SizedBox(height: 16),
+                  // Wrist 데이터
+                  buildSensorCard(
+                    '손목 각도',
+                    wrist,
+                    Icons.arrow_downward,
+                    Colors.orange,
+                  ),
+                ],
+              ),
             ),
-          ),
+            SizedBox(height: 16),
+          ] else ...[
+            // IMU 비활성화 상태 표시
+            Padding(
+              padding: EdgeInsets.all(32),
+              child: Column(
+                children: [
+                  Icon(Icons.sensors_off, size: 64, color: Colors.grey[400]),
+                  SizedBox(height: 16),
+                  Text(
+                    'IMU 센서가 비활성화되어 있습니다',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 16, color: Colors.grey[600]),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    '위의 스위치를 켜서 센서를 활성화하세요',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 14, color: Colors.grey[500]),
+                  ),
+                ],
+              ),
+            ),
+          ],
 
-          // IMU Control Buttons
-          Padding(
-            padding: EdgeInsets.all(16),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                ElevatedButton(
-                  onPressed: toggleIMU,
-                  style: ElevatedButton.styleFrom(
-                    padding: EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                    backgroundColor: imuEnabled ? Colors.red : Colors.green,
+          // 하단 버튼 (센서 보정)
+          if (imuEnabled)
+            Container(
+              padding: EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black12,
+                    blurRadius: 4,
+                    offset: Offset(0, -2),
                   ),
-                  child: Text(
-                    imuEnabled ? 'IMU 끄기' : 'IMU 켜기',
-                    style: TextStyle(fontSize: 16),
+                ],
+              ),
+              child: ElevatedButton.icon(
+                onPressed: isCalibrating ? null : calibrateIMU,
+                icon: isCalibrating
+                    ? SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : Icon(Icons.settings_backup_restore),
+                label: Text(isCalibrating ? '보정 중...' : '센서 보정하기'),
+                style: ElevatedButton.styleFrom(
+                  padding: EdgeInsets.all(16),
+                  minimumSize: Size(double.infinity, 50),
+                  backgroundColor: isCalibrating ? Colors.grey : Colors.blue,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
                   ),
-                ),
-                ElevatedButton(
-                  onPressed: calibrateIMU,
-                  style: ElevatedButton.styleFrom(
-                    padding: EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                    backgroundColor: Colors.blue,
-                  ),
-                  child: Text('센서 보정', style: TextStyle(fontSize: 16)),
-                ),
-                ElevatedButton(
-                  onPressed: () async {
-                    if (!imuEnabled) {
-                      await toggleIMU(); // IMU 활성화 명령 전송
-                    }
-                  },
-                  style: ElevatedButton.styleFrom(
-                    padding: EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                    backgroundColor: Colors.green,
-                  ),
-                  child: Text('IMU 활성화', style: TextStyle(fontSize: 16)),
-                ),
-              ],
-            ),
-          ),
-
-          // 하단 버튼
-          Container(
-            padding: EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black12,
-                  blurRadius: 4,
-                  offset: Offset(0, -2),
-                ),
-              ],
-            ),
-            child: ElevatedButton.icon(
-              onPressed: calibrateIMU,
-              icon: Icon(Icons.settings_backup_restore),
-              label: Text('센서 보정하기'),
-              style: ElevatedButton.styleFrom(
-                padding: EdgeInsets.all(16),
-                minimumSize: Size(double.infinity, 50),
-                backgroundColor: Colors.blue,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
                 ),
               ),
             ),
-          ),
         ],
       ),
     );

@@ -32,6 +32,7 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
   BluetoothCharacteristic? imuControlCharacteristic;
 
   bool isLoading = true;
+  String errorMessage = '';
 
   @override
   void initState() {
@@ -42,41 +43,71 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
 
   Future<void> discoverServices() async {
     try {
+      print('🔍 Starting service discovery...');
       List<BluetoothService> services = await widget.device.discoverServices();
+      print('📡 Found ${services.length} services');
+
+      bool serviceFound = false;
 
       for (var service in services) {
+        print('Service UUID: ${service.uuid.toString()}');
+
         if (service.uuid.toString().toLowerCase() ==
             SERVICE_UUID.toLowerCase()) {
-          print('ESP32 service found!');
+          serviceFound = true;
+          print('✅ ESP32 service found!');
 
           for (var characteristic in service.characteristics) {
             String charUuid = characteristic.uuid.toString().toLowerCase();
+            print('  Characteristic: $charUuid');
 
             if (charUuid == WIFI_SCAN_UUID.toLowerCase()) {
               scanCharacteristic = characteristic;
+              print('    ✓ WiFi Scan Char');
             } else if (charUuid == WIFI_SSID_UUID.toLowerCase()) {
               ssidCharacteristic = characteristic;
+              print('    ✓ WiFi SSID Char');
             } else if (charUuid == WIFI_PASS_UUID.toLowerCase()) {
               passwordCharacteristic = characteristic;
+              print('    ✓ WiFi Password Char');
             } else if (charUuid == WIFI_STATUS_UUID.toLowerCase()) {
               statusCharacteristic = characteristic;
+              print('    ✓ WiFi Status Char');
             } else if (charUuid == SENSOR_DATA_UUID.toLowerCase()) {
               sensorDataCharacteristic = characteristic;
+              print('    ✓ Sensor Data Char');
             } else if (charUuid == IMU_CONTROL_UUID.toLowerCase()) {
               imuControlCharacteristic = characteristic;
+              print('    ✓ IMU Control Char');
             }
           }
           break;
         }
       }
 
+      if (!serviceFound) {
+        errorMessage = 'ESP32 서비스를 찾을 수 없습니다.\nESP32 펌웨어를 확인해주세요.';
+        print('❌ ESP32 service not found!');
+      } else {
+        // 각 characteristic 확인
+        if (imuControlCharacteristic == null) {
+          print('⚠️ IMU Control Characteristic not found!');
+        }
+        if (sensorDataCharacteristic == null) {
+          print('⚠️ Sensor Data Characteristic not found!');
+        }
+      }
+
       setState(() {
         isLoading = false;
       });
+
+      print('✅ Service discovery completed');
     } catch (e) {
-      print('Service discovery error: $e');
+      print('❌ Service discovery error: $e');
       setState(() {
         isLoading = false;
+        errorMessage = '서비스 검색 중 오류 발생: $e';
       });
     }
   }
@@ -98,13 +129,15 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
               : widget.device.platformName,
         ),
         backgroundColor: Colors.blue,
-        bottom: TabBar(
-          controller: _tabController,
-          tabs: [
-            Tab(icon: Icon(Icons.wifi), text: 'WiFi 설정'),
-            Tab(icon: Icon(Icons.sensors), text: 'IMU 제어'),
-          ],
-        ),
+        bottom: isLoading
+            ? null
+            : TabBar(
+                controller: _tabController,
+                tabs: [
+                  Tab(icon: Icon(Icons.wifi), text: 'WiFi 설정'),
+                  Tab(icon: Icon(Icons.sensors), text: 'IMU 제어'),
+                ],
+              ),
       ),
       body: isLoading
           ? Center(
@@ -115,6 +148,44 @@ class _DeviceControlScreenState extends State<DeviceControlScreen>
                   SizedBox(height: 16),
                   Text('서비스 검색 중...'),
                 ],
+              ),
+            )
+          : errorMessage.isNotEmpty
+          ? Center(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.error_outline, size: 64, color: Colors.red),
+                    SizedBox(height: 16),
+                    Text(
+                      errorMessage,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 16, color: Colors.red[700]),
+                    ),
+                    SizedBox(height: 24),
+                    ElevatedButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          isLoading = true;
+                          errorMessage = '';
+                        });
+                        discoverServices();
+                      },
+                      icon: Icon(Icons.refresh),
+                      label: Text('다시 시도'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.blue,
+                        foregroundColor: Colors.white,
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             )
           : TabBarView(
