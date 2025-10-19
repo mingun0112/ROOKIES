@@ -88,7 +88,7 @@ class _IMUControlTabState extends State<IMUControlTab> {
   Future<void> toggleIMU() async {
     if (widget.imuControlChar != null) {
       try {
-        String command = imuEnabled ? "OFF" : "ON";
+        String command = imuEnabled ? "DISABLED" : "ENABLED"; // 명령어 수정
         await widget.imuControlChar!.write(utf8.encode(command));
         print('IMU toggle command sent: $command');
         setState(() {
@@ -102,8 +102,8 @@ class _IMUControlTabState extends State<IMUControlTab> {
   }
 
   Future<void> calibrateIMU() async {
-    showSnackBar("센서 보정 중... 기기를 평평한 곳에 놓아주세요!");
-    if (widget.imuControlChar != null) {
+    if (imuEnabled && widget.imuControlChar != null) {
+      showSnackBar("센서 보정 중... 기기를 평평한 곳에 놓아주세요!");
       try {
         await widget.imuControlChar!.write(utf8.encode("CALIBRATE"));
         print('Calibration command sent');
@@ -111,6 +111,8 @@ class _IMUControlTabState extends State<IMUControlTab> {
         print('Calibration error: $e');
         showSnackBar("보정 실패: $e");
       }
+    } else {
+      showSnackBar("IMU가 비활성화 상태입니다. 활성화 후 보정하세요.");
     }
   }
 

@@ -119,18 +119,18 @@ class IMUControlCallbacks: public BLECharacteristicCallbacks {
     Serial.print("IMU Control Command: ");
     Serial.println(command);
 
-    if (command == "ON") {
+    if (command == "ENABLED") {
       imuEnabled = true;
       Serial.println("IMU Enabled");
       if (deviceConnected) {
-        pIMUControlChar->setValue("ON");
+        pIMUControlChar->setValue("ENABLED");
         pIMUControlChar->notify();
       }
-    } else if (command == "OFF") {
+    } else if (command == "DISABLED") {
       imuEnabled = false;
       Serial.println("IMU Disabled");
       if (deviceConnected) {
-        pIMUControlChar->setValue("OFF");
+        pIMUControlChar->setValue("DISABLED");
         pIMUControlChar->notify();
       }
     } else if (command == "CALIBRATE") {
