@@ -45,7 +45,7 @@ class _IMUControlTabState extends State<IMUControlTab> {
         value,
       ) {
         String status = utf8.decode(value);
-        print('IMU Status: $status');
+        print('IMU Status received: $status');
 
         setState(() {
           if (status == "ON") {
@@ -60,6 +60,8 @@ class _IMUControlTabState extends State<IMUControlTab> {
 
       // 초기 상태 확인
       checkIMUStatus();
+    } else {
+      print('IMU Control Characteristic is null. Cannot set notifications.');
     }
   }
 
@@ -76,42 +78,58 @@ class _IMUControlTabState extends State<IMUControlTab> {
   }
 
   Future<void> checkIMUStatus() async {
-    if (widget.imuControlChar != null) {
-      try {
-        await widget.imuControlChar!.write(utf8.encode("STATUS"));
-      } catch (e) {
-        print('Status check error: $e');
-      }
+    if (widget.imuControlChar == null) {
+      print('IMU Control Characteristic is null. Check BLE connection.');
+      return;
+    }
+
+    try {
+      print('Requesting IMU status...');
+      await widget.imuControlChar!.write(utf8.encode("STATUS"));
+      print('IMU status request sent successfully.');
+    } catch (e) {
+      print('Error requesting IMU status: $e');
     }
   }
 
   Future<void> toggleIMU() async {
-    if (widget.imuControlChar != null) {
-      try {
-        String command = imuEnabled ? "DISABLED" : "ENABLED"; // 명령어 수정
-        await widget.imuControlChar!.write(utf8.encode(command));
-        print('IMU toggle command sent: $command');
-        setState(() {
-          imuEnabled = !imuEnabled;
-        });
-      } catch (e) {
-        print('Toggle error: $e');
-        showSnackBar("IMU 제어 실패: $e");
-      }
+    if (widget.imuControlChar == null) {
+      print('IMU Control Characteristic is null. Check BLE connection.');
+      return;
+    }
+
+    try {
+      String command = imuEnabled ? "DISABLED" : "ENABLED"; // 명령어 수정
+      print('Sending IMU toggle command: $command');
+      await widget.imuControlChar!.write(utf8.encode(command));
+      print('IMU toggle command sent successfully: $command');
+      setState(() {
+        imuEnabled = !imuEnabled;
+      });
+    } catch (e) {
+      print('Error sending IMU toggle command: $e');
+      showSnackBar("IMU 제어 실패: $e");
     }
   }
 
   Future<void> calibrateIMU() async {
-    if (imuEnabled && widget.imuControlChar != null) {
+    if (widget.imuControlChar == null) {
+      print('IMU Control Characteristic is null. Check BLE connection.');
+      return;
+    }
+
+    if (imuEnabled) {
       showSnackBar("센서 보정 중... 기기를 평평한 곳에 놓아주세요!");
       try {
+        print('Sending IMU calibration command: CALIBRATE');
         await widget.imuControlChar!.write(utf8.encode("CALIBRATE"));
-        print('Calibration command sent');
+        print('IMU calibration command sent successfully.');
       } catch (e) {
-        print('Calibration error: $e');
+        print('Error sending IMU calibration command: $e');
         showSnackBar("보정 실패: $e");
       }
     } else {
+      print('IMU is disabled. Cannot calibrate.');
       showSnackBar("IMU가 비활성화 상태입니다. 활성화 후 보정하세요.");
     }
   }

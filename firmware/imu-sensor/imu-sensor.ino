@@ -116,7 +116,7 @@ class PassCallbacks: public BLECharacteristicCallbacks {
 class IMUControlCallbacks: public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* pChar) {
     String command = pChar->getValue().c_str();
-    Serial.print("IMU Control Command: ");
+    Serial.print("IMU Control Command Received: ");
     Serial.println(command);
 
     if (command == "ENABLED") {
@@ -125,6 +125,7 @@ class IMUControlCallbacks: public BLECharacteristicCallbacks {
       if (deviceConnected) {
         pIMUControlChar->setValue("ENABLED");
         pIMUControlChar->notify();
+        Serial.println("IMU Enabled notification sent.");
       }
     } else if (command == "DISABLED") {
       imuEnabled = false;
@@ -132,6 +133,7 @@ class IMUControlCallbacks: public BLECharacteristicCallbacks {
       if (deviceConnected) {
         pIMUControlChar->setValue("DISABLED");
         pIMUControlChar->notify();
+        Serial.println("IMU Disabled notification sent.");
       }
     } else if (command == "CALIBRATE") {
       if (imuEnabled) {  // 보정은 IMU가 활성화된 상태에서만 수행
@@ -140,9 +142,19 @@ class IMUControlCallbacks: public BLECharacteristicCallbacks {
         if (deviceConnected) {
           pIMUControlChar->setValue("CALIBRATED");
           pIMUControlChar->notify();
+          Serial.println("IMU Calibration notification sent.");
         }
       } else {
         Serial.println("IMU is disabled. Calibration skipped.");
+      }
+      } else if (command == "STATUS") {
+      Serial.println("IMU Status Requested");
+      if (deviceConnected) {
+        String status = imuEnabled ? "ENABLED" : "DISABLED";
+        pIMUControlChar->setValue(status.c_str());
+        pIMUControlChar->notify();
+        Serial.print("IMU Status notification sent: ");
+        Serial.println(status);
       }
     }
   }
