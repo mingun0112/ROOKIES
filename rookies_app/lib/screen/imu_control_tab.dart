@@ -14,7 +14,7 @@ class IMUControlTab extends StatefulWidget {
 }
 
 class _IMUControlTabState extends State<IMUControlTab> {
-  bool imuEnabled = true;
+  bool imuEnabled = false;
   double elbow = 0.0;
   double wrist = 0.0;
   StreamSubscription? sensorSubscription;
@@ -265,6 +265,18 @@ class _IMUControlTabState extends State<IMUControlTab> {
                     backgroundColor: Colors.blue,
                   ),
                   child: Text('센서 보정', style: TextStyle(fontSize: 16)),
+                ),
+                ElevatedButton(
+                  onPressed: () async {
+                    if (!imuEnabled) {
+                      await toggleIMU(); // IMU 활성화 명령 전송
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    padding: EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    backgroundColor: Colors.green,
+                  ),
+                  child: Text('IMU 활성화', style: TextStyle(fontSize: 16)),
                 ),
               ],
             ),
