@@ -38,7 +38,7 @@ PubSubClient client(espClient);
 
 // ───────── 상태 변수 ─────────
 bool deviceConnected = false;
-bool imuEnabled = true;  // IMU 활성화 상태
+bool imuEnabled = false;  // IMU 활성화 상태
 String wifiSSID = "";
 String wifiPassword = "";
 bool needToConnect = false;
@@ -141,9 +141,10 @@ class IMUControlCallbacks: public BLECharacteristicCallbacks {
           pIMUControlChar->setValue("CALIBRATED");
           pIMUControlChar->notify();
         }
-      } else {
-        Serial.println("IMU is disabled. Calibration skipped.");
       }
+      // } else {
+      //   Serial.println("IMU is disabled. Calibration skipped.");
+      // }
     }
   }
 };
@@ -219,12 +220,13 @@ void loop() {
       last_ble_send = now;
       sendBLE();
     }
-  } else {
-    // IMU가 비활성화된 경우 상태를 출력
-    if (deviceConnected) {
-      Serial.println("IMU is disabled. No data is being processed.");
-    }
-  }
+  } 
+  // else {
+  //   // IMU가 비활성화된 경우 상태를 출력
+  //   if (deviceConnected) {
+  //     Serial.println("IMU is disabled. No data is being processed.");
+  //   }
+  // }
 
   // WiFi 연결되었을 때만 MQTT 동작
   if (wifiConnected) {
