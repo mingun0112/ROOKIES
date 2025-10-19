@@ -141,10 +141,9 @@ class IMUControlCallbacks: public BLECharacteristicCallbacks {
           pIMUControlChar->setValue("CALIBRATED");
           pIMUControlChar->notify();
         }
+      } else {
+        Serial.println("IMU is disabled. Calibration skipped.");
       }
-      // } else {
-      //   Serial.println("IMU is disabled. Calibration skipped.");
-      // }
     }
   }
 };
@@ -220,13 +219,7 @@ void loop() {
       last_ble_send = now;
       sendBLE();
     }
-  } 
-  // else {
-  //   // IMU가 비활성화된 경우 상태를 출력
-  //   if (deviceConnected) {
-  //     Serial.println("IMU is disabled. No data is being processed.");
-  //   }
-  // }
+  }
 
   // WiFi 연결되었을 때만 MQTT 동작
   if (wifiConnected) {
