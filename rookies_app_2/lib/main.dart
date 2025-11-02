@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'screens/device_list_screen.dart';
-import 'services/bluetooth_service.dart';
+import 'services/bluetooth_manager.dart'; // ⭐ 이름 변경
 
 void main() {
   runApp(const MyApp());
@@ -13,7 +13,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
-      create: (_) => BluetoothService(),
+      create: (_) => BluetoothManager(), // ⭐ 이름 변경
       child: MaterialApp(
         title: 'Robotic Arm Controller',
         theme: ThemeData(

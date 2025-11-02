@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp; // ⭐ alias 사용
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
-import '../services/bluetooth_service.dart';
+import '../services/bluetooth_manager.dart';
 import 'imu_control_screen.dart';
 import 'motor_control_screen.dart';
 
@@ -14,8 +14,8 @@ class DeviceListScreen extends StatefulWidget {
 }
 
 class _DeviceListScreenState extends State<DeviceListScreen> {
-  List<BluetoothDevice> _devices = [];
-  bool _isLoading = false;
+  List<fbp.ScanResult> _scanResults = []; // ⭐ fbp. 사용
+  bool _isScanning = false;
 
   @override
   void initState() {
@@ -26,25 +26,26 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
   Future<void> _requestPermissions() async {
     await [
       Permission.bluetooth,
-      Permission.bluetoothConnect,
       Permission.bluetoothScan,
+      Permission.bluetoothConnect,
       Permission.location,
     ].request();
-    _loadDevices();
   }
 
-  Future<void> _loadDevices() async {
-    setState(() => _isLoading = true);
+  Future<void> _startScan() async {
+    setState(() => _isScanning = true);
+
     try {
-      final btService = context.read<BluetoothService>();
-      final devices = await btService.getPairedDevices();
+      final btManager = context.read<BluetoothManager>();
+      final results = await btManager.scanForDevices();
+
       setState(() {
-        _devices = devices;
-        _isLoading = false;
+        _scanResults = results;
+        _isScanning = false;
       });
     } catch (e) {
-      setState(() => _isLoading = false);
-      _showError('Failed to load devices: $e');
+      setState(() => _isScanning = false);
+      _showError('Scan failed: $e');
     }
   }
 
@@ -54,8 +55,9 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
     );
   }
 
-  Future<void> _connectToDevice(BluetoothDevice device) async {
-    final btService = context.read<BluetoothService>();
+  Future<void> _connectToDevice(fbp.BluetoothDevice device) async {
+    // ⭐ fbp. 사용
+    final btManager = context.read<BluetoothManager>();
 
     showDialog(
       context: context,
@@ -64,23 +66,26 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
     );
 
     try {
-      bool success = await btService.connectToDevice(device);
-      Navigator.pop(context); // Close loading dialog
+      bool success = await btManager.connectToDevice(device);
+      Navigator.pop(context);
 
       if (success) {
-        // 기기 이름으로 타입 판별
-        if (device.name?.contains('IMU') ?? false) {
+        String deviceName = device.platformName.toLowerCase();
+
+        if (deviceName.contains('imu') || deviceName.contains('sensor')) {
           Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const IMUControlScreen()),
           );
-        } else if (device.name?.contains('Motor') ?? false) {
+        } else if (deviceName.contains('motor') ||
+            deviceName.contains('control')) {
           Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const MotorControlScreen()),
           );
         } else {
-          _showError('Unknown device type');
+          _showError(
+              'Unknown device type. Please rename ESP32 to include "IMU" or "Motor"');
         }
       } else {
         _showError('Connection failed');
@@ -98,56 +103,115 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
         title: const Text('Select ESP32 Device'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _loadDevices,
+            icon: _isScanning
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.white),
+                  )
+                : const Icon(Icons.refresh),
+            onPressed: _isScanning ? null : _startScan,
           ),
         ],
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _devices.isEmpty
-              ? const Center(
-                  child: Text('No paired devices.\nPair ESP32 in Settings.'),
-                )
-              : ListView.builder(
-                  itemCount: _devices.length,
-                  itemBuilder: (context, index) {
-                    final device = _devices[index];
-                    final isIMU = device.name?.contains('IMU') ?? false;
-                    final isMotor = device.name?.contains('Motor') ?? false;
+      body: _scanResults.isEmpty
+          ? Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.bluetooth_searching,
+                      size: 64, color: Colors.grey),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'No ESP32 devices found',
+                    style: TextStyle(fontSize: 16, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Make sure ESP32 is powered on',
+                    style: TextStyle(fontSize: 14, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 24),
+                  ElevatedButton.icon(
+                    onPressed: _isScanning ? null : _startScan,
+                    icon: const Icon(Icons.search),
+                    label: const Text('Scan for Devices'),
+                  ),
+                ],
+              ),
+            )
+          : ListView.builder(
+              itemCount: _scanResults.length,
+              itemBuilder: (context, index) {
+                final result = _scanResults[index];
+                final device = result.device;
+                final deviceName = device.platformName;
 
-                    return Card(
-                      margin: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 8,
-                      ),
-                      child: ListTile(
-                        leading: Icon(
-                          isIMU
-                              ? Icons.sensors
-                              : isMotor
-                                  ? Icons.precision_manufacturing
-                                  : Icons.bluetooth,
-                          size: 36,
-                          color: isIMU
-                              ? Colors.blue
-                              : isMotor
-                                  ? Colors.orange
-                                  : Colors.grey,
+                final isIMU = deviceName.toLowerCase().contains('imu') ||
+                    deviceName.toLowerCase().contains('sensor');
+                final isMotor = deviceName.toLowerCase().contains('motor') ||
+                    deviceName.toLowerCase().contains('control');
+
+                return Card(
+                  margin:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: ListTile(
+                    leading: Icon(
+                      isIMU
+                          ? Icons.sensors
+                          : isMotor
+                              ? Icons.precision_manufacturing
+                              : Icons.bluetooth,
+                      size: 36,
+                      color: isIMU
+                          ? Colors.blue
+                          : isMotor
+                              ? Colors.orange
+                              : Colors.grey,
+                    ),
+                    title: Text(
+                      deviceName.isEmpty ? 'Unknown Device' : deviceName,
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(device.remoteId.toString()),
+                        Text(
+                          'RSSI: ${result.rssi} dBm',
+                          style: TextStyle(
+                            color: result.rssi > -70
+                                ? Colors.green
+                                : Colors.orange,
+                            fontSize: 12,
+                          ),
                         ),
-                        title: Text(
-                          device.name ?? 'Unknown Device',
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        subtitle: Text(
-                          '${device.address}\n${isIMU ? 'IMU Sensor' : isMotor ? 'Motor Controller' : 'Unknown Type'}',
-                        ),
-                        trailing: const Icon(Icons.chevron_right),
-                        onTap: () => _connectToDevice(device),
-                      ),
-                    );
-                  },
-                ),
+                        if (isIMU)
+                          const Text('IMU Sensor',
+                              style: TextStyle(color: Colors.blue))
+                        else if (isMotor)
+                          const Text('Motor Controller',
+                              style: TextStyle(color: Colors.orange))
+                        else
+                          const Text('Unknown Type',
+                              style: TextStyle(color: Colors.grey)),
+                      ],
+                    ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => _connectToDevice(device),
+                  ),
+                );
+              },
+            ),
+      floatingActionButton: _scanResults.isNotEmpty
+          ? FloatingActionButton(
+              onPressed: _isScanning ? null : _startScan,
+              child: _isScanning
+                  ? const CircularProgressIndicator(color: Colors.white)
+                  : const Icon(Icons.refresh),
+            )
+          : null,
     );
   }
 }

@@ -1,52 +1,60 @@
+// ESP32_BLE_imu_sensor.cpp
+// iOS 호환 BLE 버전 - IMU Sensor
+
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <Wire.h>
 #include <ArduinoJson.h>
-#include <BluetoothSerial.h>
 #include <Preferences.h>
 
 #define MPU_ADDR 0x68
 
-// ───────── Bluetooth ─────────
-BluetoothSerial SerialBT;
-Preferences preferences;
+// ───────── BLE 설정 ─────────
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define RX_CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define TX_CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a9"
+
+BLEServer* pServer = NULL;
+BLECharacteristic* pTxCharacteristic = NULL;
+BLECharacteristic* pRxCharacteristic = NULL;
+bool deviceConnected = false;
+String receivedData = "";
 
 // ───────── WiFi & MQTT 설정 ─────────
+Preferences preferences;
 String ssid = "";
 String password = "";
 const char* mqtt_server = "211.107.16.45";
 const int   mqtt_port   = 51883;
-const char* topic_pub   = "degree/mpu";  // ⭐ MPU 전용 토픽
+const char* topic_pub   = "degree/mpu";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-// ───────── 센서 원시값 ─────────
+// ───────── 센서 데이터 ─────────
 int16_t AcX, AcY, AcZ, GyX, GyY, GyZ;
-
-// ───────── 필터 결과 ─────────
 float accel_angle_x, accel_angle_y;
 float gyro_x, gyro_y;
-float filtered_angle_x = 0.0f;   // pitch (elbow)
-float filtered_angle_y = 0.0f;   // roll  (wrist)
+float filtered_angle_x = 0.0f;
+float filtered_angle_y = 0.0f;
 
-// ───────── Calibration Offsets ─────────
 int16_t gyro_offset_x = 0;
 int16_t gyro_offset_y = 0;
 int16_t gyro_offset_z = 0;
 
-// ───────── 시간 계산 ─────────
 unsigned long prev_time = 0;
 float dt;
-
-// ───────── 상보필터 계수 ─────────
 const float ALPHA = 0.96f;
 
-// ───────── 상태 관리 ─────────
 bool wifi_configured = false;
 bool is_running = false;
 
 // ───────── 함수 선언 ─────────
+void initBLE();
 void initMPU6050();
 void calibrateSensors();
 void readAccelGyro();
@@ -56,25 +64,53 @@ void printAnglesAndPublish();
 float mapFloat(float x, float in_min, float in_max, float out_min, float out_max);
 void setup_wifi();
 void reconnect();
-void handleBluetoothCommands();
+void handleCommand(String command);
+void sendBLEResponse(String message);
 void loadWiFiConfig();
 void saveWiFiConfig();
-void saveCalibration();
 void loadCalibration();
+void saveCalibration();
+
+// ───────── BLE 콜백 클래스 ─────────
+class MyServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+      deviceConnected = true;
+      Serial.println("✅ BLE Device connected");
+    }
+
+    void onDisconnect(BLEServer* pServer) {
+      deviceConnected = false;
+      Serial.println("❌ BLE Device disconnected");
+      BLEDevice::startAdvertising();
+    }
+};
+
+class MyCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      std::string rxValue = pCharacteristic->getValue();
+      
+      if (rxValue.length() > 0) {
+        receivedData += String(rxValue.c_str());
+        
+        if (receivedData.indexOf('\n') != -1) {
+          receivedData.trim();
+          Serial.println("BLE RX: " + receivedData);
+          handleCommand(receivedData);
+          receivedData = "";
+        }
+      }
+    }
+};
 
 // ───────── SETUP ─────────
 void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  // Preferences 초기화
   preferences.begin("imu-config", false);
   
-  // Bluetooth 시작
-  SerialBT.begin("IMU_Sensor_ESP32");
-  Serial.println("🔵 Bluetooth Started: IMU_Sensor_ESP32");
-
-  // WiFi 설정 로드
+  initBLE();
+  
   loadWiFiConfig();
   loadCalibration();
 
@@ -90,15 +126,12 @@ void setup() {
     is_running = true;
     Serial.println("✅ Auto-started with saved WiFi config");
   } else {
-    Serial.println("⚠️ WiFi not configured. Use Bluetooth to setup.");
+    Serial.println("⚠️ WiFi not configured. Use BLE to setup.");
   }
 }
 
 // ───────── LOOP ─────────
 void loop() {
-  // Bluetooth 명령 처리
-  handleBluetoothCommands();
-
   if (is_running) {
     if (!client.connected()) reconnect();
     client.loop();
@@ -108,97 +141,120 @@ void loop() {
     computeAngles();
     printAnglesAndPublish();
 
-    delay(10);  // 약 100Hz
+    delay(10);
   } else {
     delay(100);
   }
 }
 
-// ───────── Bluetooth 명령 처리 ─────────
-void handleBluetoothCommands() {
-  if (SerialBT.available()) {
-    String command = SerialBT.readStringUntil('\n');
-    command.trim();
+// ───────── BLE 초기화 ─────────
+void initBLE() {
+  BLEDevice::init("IMU_Sensor_ESP32");
+  
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+  
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+  
+  pTxCharacteristic = pService->createCharacteristic(
+                        TX_CHARACTERISTIC_UUID,
+                        BLECharacteristic::PROPERTY_NOTIFY
+                      );
+  pTxCharacteristic->addDescriptor(new BLE2902());
+  
+  pRxCharacteristic = pService->createCharacteristic(
+                        RX_CHARACTERISTIC_UUID,
+                        BLECharacteristic::PROPERTY_WRITE
+                      );
+  pRxCharacteristic->setCallbacks(new MyCallbacks());
+  
+  pService->start();
+  
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06);
+  pAdvertising->setMinPreferred(0x12);
+  BLEDevice::startAdvertising();
+  
+  Serial.println("🔵 BLE Started: IMU_Sensor_ESP32");
+}
+
+// ───────── BLE 응답 전송 ─────────
+void sendBLEResponse(String message) {
+  if (deviceConnected && pTxCharacteristic != NULL) {
+    pTxCharacteristic->setValue(message.c_str());
+    pTxCharacteristic->notify();
+    delay(10);
+  }
+}
+
+// ───────── 명령 처리 ─────────
+void handleCommand(String command) {
+  StaticJsonDocument<256> doc;
+  DeserializationError error = deserializeJson(doc, command);
+  
+  if (error) {
+    sendBLEResponse("{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
+    return;
+  }
+  
+  String cmd = doc["cmd"].as<String>();
+  
+  if (cmd == "set_wifi") {
+    ssid = doc["ssid"].as<String>();
+    password = doc["password"].as<String>();
+    saveWiFiConfig();
+    sendBLEResponse("{\"status\":\"success\",\"message\":\"WiFi config saved\"}");
     
-    Serial.println("BT Command: " + command);
-    
-    StaticJsonDocument<256> doc;
-    DeserializationError error = deserializeJson(doc, command);
-    
-    if (error) {
-      SerialBT.println("{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
-      return;
+    setup_wifi();
+    if (WiFi.status() == WL_CONNECTED) {
+      client.setServer(mqtt_server, mqtt_port);
+      wifi_configured = true;
+      is_running = true;
+      prev_time = micros();
+      sendBLEResponse("{\"status\":\"success\",\"message\":\"WiFi connected\"}");
+    } else {
+      sendBLEResponse("{\"status\":\"error\",\"message\":\"WiFi connection failed\"}");
     }
-    
-    String cmd = doc["cmd"].as<String>();
-    
-    // WiFi 설정
-    if (cmd == "set_wifi") {
-      ssid = doc["ssid"].as<String>();
-      password = doc["password"].as<String>();
-      
-      saveWiFiConfig();
-      
-      SerialBT.println("{\"status\":\"success\",\"message\":\"WiFi config saved\"}");
-      
-      // WiFi 연결 시도
-      setup_wifi();
-      if (WiFi.status() == WL_CONNECTED) {
-        client.setServer(mqtt_server, mqtt_port);
-        wifi_configured = true;
-        is_running = true;
-        prev_time = micros();
-        SerialBT.println("{\"status\":\"success\",\"message\":\"WiFi connected\"}");
-      } else {
-        SerialBT.println("{\"status\":\"error\",\"message\":\"WiFi connection failed\"}");
-      }
+  }
+  else if (cmd == "calibrate") {
+    sendBLEResponse("{\"status\":\"info\",\"message\":\"Calibration started\"}");
+    calibrateSensors();
+    saveCalibration();
+    sendBLEResponse("{\"status\":\"success\",\"message\":\"Calibration completed\"}");
+  }
+  else if (cmd == "start") {
+    if (wifi_configured) {
+      is_running = true;
+      prev_time = micros();
+      sendBLEResponse("{\"status\":\"success\",\"message\":\"Sensor started\"}");
+    } else {
+      sendBLEResponse("{\"status\":\"error\",\"message\":\"WiFi not configured\"}");
     }
+  }
+  else if (cmd == "stop") {
+    is_running = false;
+    sendBLEResponse("{\"status\":\"success\",\"message\":\"Sensor stopped\"}");
+  }
+  else if (cmd == "status") {
+    StaticJsonDocument<256> response;
+    response["wifi_configured"] = wifi_configured;
+    response["is_running"] = is_running;
+    response["wifi_connected"] = (WiFi.status() == WL_CONNECTED);
+    response["mqtt_connected"] = client.connected();
+    response["ssid"] = ssid;
     
-    // Calibration 시작
-    else if (cmd == "calibrate") {
-      SerialBT.println("{\"status\":\"info\",\"message\":\"Calibration started\"}");
-      calibrateSensors();
-      saveCalibration();
-      SerialBT.println("{\"status\":\"success\",\"message\":\"Calibration completed\"}");
-    }
-    
-    // 시작/중지
-    else if (cmd == "start") {
-      if (wifi_configured) {
-        is_running = true;
-        prev_time = micros();
-        SerialBT.println("{\"status\":\"success\",\"message\":\"Sensor started\"}");
-      } else {
-        SerialBT.println("{\"status\":\"error\",\"message\":\"WiFi not configured\"}");
-      }
-    }
-    else if (cmd == "stop") {
-      is_running = false;
-      SerialBT.println("{\"status\":\"success\",\"message\":\"Sensor stopped\"}");
-    }
-    
-    // 상태 조회
-    else if (cmd == "status") {
-      StaticJsonDocument<256> response;
-      response["wifi_configured"] = wifi_configured;
-      response["is_running"] = is_running;
-      response["wifi_connected"] = (WiFi.status() == WL_CONNECTED);
-      response["mqtt_connected"] = client.connected();
-      response["ssid"] = ssid;
-      
-      String output;
-      serializeJson(response, output);
-      SerialBT.println(output);
-    }
-    
-    // WiFi 재연결
-    else if (cmd == "reconnect_wifi") {
-      setup_wifi();
-      if (WiFi.status() == WL_CONNECTED) {
-        SerialBT.println("{\"status\":\"success\",\"message\":\"WiFi reconnected\"}");
-      } else {
-        SerialBT.println("{\"status\":\"error\",\"message\":\"WiFi reconnection failed\"}");
-      }
+    String output;
+    serializeJson(response, output);
+    sendBLEResponse(output);
+  }
+  else if (cmd == "reconnect_wifi") {
+    setup_wifi();
+    if (WiFi.status() == WL_CONNECTED) {
+      sendBLEResponse("{\"status\":\"success\",\"message\":\"WiFi reconnected\"}");
+    } else {
+      sendBLEResponse("{\"status\":\"error\",\"message\":\"WiFi reconnection failed\"}");
     }
   }
 }
@@ -318,7 +374,7 @@ void readAccelGyro() {
   AcX = Wire.read() << 8 | Wire.read();
   AcY = Wire.read() << 8 | Wire.read();
   AcZ = Wire.read() << 8 | Wire.read();
-  Wire.read(); Wire.read(); // 온도 버림
+  Wire.read(); Wire.read();
   GyX = (Wire.read() << 8 | Wire.read()) - gyro_offset_x;
   GyY = (Wire.read() << 8 | Wire.read()) - gyro_offset_y;
   GyZ = (Wire.read() << 8 | Wire.read()) - gyro_offset_z;
@@ -330,8 +386,8 @@ void computeAngles() {
   float ay = AcY / 16384.0f;
   float az = AcZ / 16384.0f;
 
-  accel_angle_x = atan2(ay, sqrt(ax * ax + az * az)) * 180.0f / M_PI; // pitch
-  accel_angle_y = atan2(-ax, sqrt(ay * ay + az * az)) * 180.0f / M_PI; // roll
+  accel_angle_x = atan2(ay, sqrt(ax * ax + az * az)) * 180.0f / M_PI;
+  accel_angle_y = atan2(-ax, sqrt(ay * ay + az * az)) * 180.0f / M_PI;
 
   gyro_x = GyX / 131.0f;
   gyro_y = GyY / 131.0f;
@@ -345,11 +401,10 @@ void computeAngles() {
 
 // ───────── 출력 + MQTT 발행 ─────────
 void printAnglesAndPublish() {
-  float pitch_corrected = filtered_angle_x + 90.0f;  // Elbow
+  float pitch_corrected = filtered_angle_x + 90.0f;
   float p = pitch_corrected;
   float weight_factor = 1.0f;
 
-  //--- pitch 범위별 선형 보간 ---
   if      (p >= 0 && p < 10)   weight_factor = mapFloat(p, 0, 10, 10.0f, 4.0f);
   else if (p >= 10 && p < 30)   weight_factor = mapFloat(p, 10, 30, 4.0f, 3.1f);
   else if (p >= 30 && p < 40)   weight_factor = mapFloat(p, 30, 40, 3.1f, 2.3f);
@@ -361,24 +416,20 @@ void printAnglesAndPublish() {
   else if (p >= 140 && p < 160) weight_factor = mapFloat(p, 140, 160, 2.1f, 5.0f);
   else                          weight_factor = 1.0f;
 
-  // --- roll에 가중치 적용 ---
   float display_roll = filtered_angle_y * weight_factor;
 
-  // --- pitch/roll 범위 제한 ---
   if (pitch_corrected > 90.0f) pitch_corrected = 90.0f;
   if (pitch_corrected < 25.0f)  pitch_corrected = 25.0f;
   if (display_roll   < 0.0f)    display_roll   = 0.0f;
   if (display_roll   > 95.0f)   display_roll   = 95.0f;
 
-  // --- MQTT 발행 (MPU 전용 토픽) ---
   StaticJsonDocument<128> doc;
   doc["elbow"] = pitch_corrected;
   doc["wrist"] = display_roll;
   char buffer[128];
   serializeJson(doc, buffer);
-  client.publish(topic_pub, buffer);  // ⭐ degree/mpu로 발행
+  client.publish(topic_pub, buffer);
 
-  // --- 시리얼 출력 ---
   Serial.printf("→ [MPU] Elbow: %.2f°, Wrist: %.2f°\n", pitch_corrected, display_roll);
 }
 

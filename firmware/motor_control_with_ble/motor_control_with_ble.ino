@@ -1,37 +1,51 @@
+// ESP32_BLE_motor_control.cpp
+// iOS 호환 BLE 버전 - Motor Control
+
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include "esp_rom_sys.h"
 #include <ArduinoJson.h>
 #include <AccelStepper.h>
-#include <BluetoothSerial.h>
 #include <Preferences.h>
 
-// ───────── Bluetooth ─────────
-BluetoothSerial SerialBT;
-Preferences preferences;
+// ───────── BLE 설정 ─────────
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define RX_CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define TX_CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a9"
+
+BLEServer* pServer = NULL;
+BLECharacteristic* pTxCharacteristic = NULL;
+BLECharacteristic* pRxCharacteristic = NULL;
+bool deviceConnected = false;
+String receivedData = "";
 
 // ───────── WiFi & MQTT 설정 ─────────
+Preferences preferences;
 String ssid = "";
 String password = "";
 const char* mqtt_server = "211.107.16.45";
 const int   mqtt_port   = 51883;
-const char* topic_mpu   = "degree/mpu";     // ⭐ MPU 전용 토픽
-const char* topic_vision = "degree/vision"; // ⭐ Vision 전용 토픽
+const char* topic_mpu   = "degree/mpu";
+const char* topic_vision = "degree/vision";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
 // ───────── 모드 설정 ─────────
 enum ControlMode {
-  MODE_MPU,      // MPU 센서 모드 (MQTT: degree/mpu)
-  MODE_VISION    // Vision 모드 (MQTT: degree/vision)
+  MODE_MPU,
+  MODE_VISION
 };
 
 ControlMode current_mode = MODE_MPU;
 bool wifi_configured = false;
 bool is_running = false;
 
-// ───────── 팔꿈치 모터 (Elbow) - GPIO 제어 ─────────
+// ───────── 팔꿈치 모터 (Elbow) ─────────
 const int EN_ELBOW  = 15;
 const int STEP_ELBOW = 0;
 const int DIR_ELBOW  = 2;
@@ -51,7 +65,7 @@ float current_angle_elbow = 30.0;
 float target_angle_elbow  = 30.0;
 bool dirE = true;
 
-// ───────── 손목 모터 (Wrist) - AccelStepper 제어 ─────────
+// ───────── 손목 모터 (Wrist) ─────────
 AccelStepper stepper(AccelStepper::HALF4WIRE, 26, 27, 14, 12);
 #define STEPS_PER_REV 544.0
 #define STEPS_PER_DEGREE_W 100.0
@@ -61,57 +75,83 @@ float target_angle_wrist  = 0.0;
 bool dirW = true;
 
 // ───────── 함수 선언 ─────────
+void initBLE();
 void setup_wifi();
 void reconnect();
 void callback(char* topic, byte* payload, unsigned int length);
 void controlElbow();
 void controlWrist();
-void handleBluetoothCommands();
+void handleCommand(String command);
+void sendBLEResponse(String message);
 void loadWiFiConfig();
 void saveWiFiConfig();
 void loadModeConfig();
 void saveModeConfig();
+
+// ───────── BLE 콜백 클래스 ─────────
+class MyServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+      deviceConnected = true;
+      Serial.println("✅ BLE Device connected");
+    }
+
+    void onDisconnect(BLEServer* pServer) {
+      deviceConnected = false;
+      Serial.println("❌ BLE Device disconnected");
+      BLEDevice::startAdvertising();
+    }
+};
+
+class MyCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      std::string rxValue = pCharacteristic->getValue();
+      
+      if (rxValue.length() > 0) {
+        receivedData += String(rxValue.c_str());
+        
+        if (receivedData.indexOf('\n') != -1) {
+          receivedData.trim();
+          Serial.println("BLE RX: " + receivedData);
+          handleCommand(receivedData);
+          receivedData = "";
+        }
+      }
+    }
+};
 
 // ───────── SETUP ─────────
 void setup() {
   Serial.begin(115200);
   delay(300);
 
-  // Preferences 초기화
   preferences.begin("motor-config", false);
   
-  // Bluetooth 시작
-  SerialBT.begin("Motor_Control_ESP32");
-  Serial.println("🔵 Bluetooth Started: Motor_Control_ESP32");
-
-  // 설정 로드
+  initBLE();
+  
   loadWiFiConfig();
   loadModeConfig();
 
-  // 엘보 모터
   pinMode(EN_ELBOW, OUTPUT);
   pinMode(STEP_ELBOW, OUTPUT);
   pinMode(DIR_ELBOW, OUTPUT);
   digitalWrite(EN_ELBOW, LOW);
 
-  // 손목 모터
   stepper.setMaxSpeed(3000.0);
   stepper.setAcceleration(1500.0);
   stepper.setSpeed(1200.0);
   stepper.setCurrentPosition(0);
 
-  // WiFi가 설정되어 있으면 자동 연결
   if (wifi_configured) {
     setup_wifi();
     if (WiFi.status() == WL_CONNECTED) {
       client.setServer(mqtt_server, mqtt_port);
       client.setCallback(callback);
-      reconnect();  // MQTT 연결 및 토픽 구독
+      reconnect();
       is_running = true;
       Serial.println("✅ Auto-started with saved WiFi config");
     }
   } else {
-    Serial.println("⚠️ WiFi not configured. Use Bluetooth to setup.");
+    Serial.println("⚠️ WiFi not configured. Use BLE to setup.");
   }
 
   Serial.println("✅ ESP32 Dual Motor Control Ready");
@@ -119,9 +159,6 @@ void setup() {
 
 // ───────── LOOP ─────────
 void loop() {
-  // Bluetooth 명령 처리
-  handleBluetoothCommands();
-
   if (is_running) {
     if (!client.connected()) reconnect();
     client.loop();
@@ -130,153 +167,171 @@ void loop() {
     controlWrist();
   }
   
-  stepper.run();  // 항상 호출
+  stepper.run();
   delay(1);
 }
 
-// ───────── Bluetooth 명령 처리 ─────────
-void handleBluetoothCommands() {
-  if (SerialBT.available()) {
-    String command = SerialBT.readStringUntil('\n');
-    command.trim();
-    
-    Serial.println("BT Command: " + command);
-    
-    StaticJsonDocument<256> doc;
-    DeserializationError error = deserializeJson(doc, command);
-    
-    if (error) {
-      SerialBT.println("{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
-      return;
-    }
-    
-    String cmd = doc["cmd"].as<String>();
-    
-    // WiFi 설정
-    if (cmd == "set_wifi") {
-      ssid = doc["ssid"].as<String>();
-      password = doc["password"].as<String>();
-      
-      saveWiFiConfig();
-      
-      SerialBT.println("{\"status\":\"success\",\"message\":\"WiFi config saved\"}");
-      
-      // WiFi 연결 시도
-      setup_wifi();
-      if (WiFi.status() == WL_CONNECTED) {
-        client.setServer(mqtt_server, mqtt_port);
-        client.setCallback(callback);
-        reconnect();  // MQTT 연결 및 모드별 토픽 구독
-        wifi_configured = true;
-        is_running = true;
-        SerialBT.println("{\"status\":\"success\",\"message\":\"WiFi connected\"}");
-      } else {
-        SerialBT.println("{\"status\":\"error\",\"message\":\"WiFi connection failed\"}");
-      }
-    }
-    
-    // 모드 설정 (⭐ 토픽 재구독 추가)
-    else if (cmd == "set_mode") {
-      String mode = doc["mode"].as<String>();
-      
-      if (mode == "mpu") {
-        current_mode = MODE_MPU;
-        saveModeConfig();
-        
-        // MQTT 재연결하여 토픽 변경
-        if (client.connected()) {
-          client.disconnect();
-          delay(100);
-          reconnect();  // degree/mpu 구독
-        }
-        
-        SerialBT.println("{\"status\":\"success\",\"message\":\"Mode set to MPU\"}");
-        Serial.println("📡 Switched to MPU mode (degree/mpu)");
-        
-      } else if (mode == "vision") {
-        current_mode = MODE_VISION;
-        saveModeConfig();
-        
-        // MQTT 재연결하여 토픽 변경
-        if (client.connected()) {
-          client.disconnect();
-          delay(100);
-          reconnect();  // degree/vision 구독
-        }
-        
-        SerialBT.println("{\"status\":\"success\",\"message\":\"Mode set to Vision\"}");
-        Serial.println("📡 Switched to Vision mode (degree/vision)");
-        
-      } else {
-        SerialBT.println("{\"status\":\"error\",\"message\":\"Invalid mode\"}");
-      }
-    }
-    
-    // 시작/중지
-    else if (cmd == "start") {
-      if (wifi_configured) {
-        is_running = true;
-        SerialBT.println("{\"status\":\"success\",\"message\":\"Motor control started\"}");
-      } else {
-        SerialBT.println("{\"status\":\"error\",\"message\":\"WiFi not configured\"}");
-      }
-    }
-    else if (cmd == "stop") {
-      is_running = false;
-      SerialBT.println("{\"status\":\"success\",\"message\":\"Motor control stopped\"}");
-    }
-    
-    // 상태 조회
-    else if (cmd == "status") {
-      StaticJsonDocument<256> response;
-      response["wifi_configured"] = wifi_configured;
-      response["is_running"] = is_running;
-      response["wifi_connected"] = (WiFi.status() == WL_CONNECTED);
-      response["mqtt_connected"] = client.connected();
-      response["mode"] = (current_mode == MODE_MPU) ? "mpu" : "vision";
-      response["ssid"] = ssid;
-      response["elbow_angle"] = current_angle_elbow;
-      response["wrist_angle"] = current_angle_wrist;
-      
-      String output;
-      serializeJson(response, output);
-      SerialBT.println(output);
-    }
-    
-    // 모터 리셋
-    else if (cmd == "reset_motors") {
-      current_angle_elbow = 30.0;
-      target_angle_elbow = 30.0;
-      current_angle_wrist = 0.0;
-      target_angle_wrist = 0.0;
-      stepper.setCurrentPosition(0);
-      SerialBT.println("{\"status\":\"success\",\"message\":\"Motors reset\"}");
-    }
-    
-    // WiFi 재연결
-    else if (cmd == "reconnect_wifi") {
-      setup_wifi();
-      if (WiFi.status() == WL_CONNECTED) {
-        SerialBT.println("{\"status\":\"success\",\"message\":\"WiFi reconnected\"}");
-      } else {
-        SerialBT.println("{\"status\":\"error\",\"message\":\"WiFi reconnection failed\"}");
-      }
-    }
-    
-    // 수동 모터 제어 (테스트용)
-    else if (cmd == "set_angles") {
-      if (doc.containsKey("elbow")) {
-        target_angle_elbow = constrain((float)doc["elbow"], 0.0, 180.0);
-      }
-      if (doc.containsKey("wrist")) {
-        target_angle_wrist = constrain((float)doc["wrist"], 0.0, 180.0);
-      }
-      SerialBT.println("{\"status\":\"success\",\"message\":\"Target angles set\"}");
-    }
+// ───────── BLE 초기화 ─────────
+void initBLE() {
+  BLEDevice::init("Motor_Control_ESP32");
+  
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+  
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+  
+  pTxCharacteristic = pService->createCharacteristic(
+                        TX_CHARACTERISTIC_UUID,
+                        BLECharacteristic::PROPERTY_NOTIFY
+                      );
+  pTxCharacteristic->addDescriptor(new BLE2902());
+  
+  pRxCharacteristic = pService->createCharacteristic(
+                        RX_CHARACTERISTIC_UUID,
+                        BLECharacteristic::PROPERTY_WRITE
+                      );
+  pRxCharacteristic->setCallbacks(new MyCallbacks());
+  
+  pService->start();
+  
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06);
+  pAdvertising->setMinPreferred(0x12);
+  BLEDevice::startAdvertising();
+  
+  Serial.println("🔵 BLE Started: Motor_Control_ESP32");
+}
+
+// ───────── BLE 응답 전송 ─────────
+void sendBLEResponse(String message) {
+  if (deviceConnected && pTxCharacteristic != NULL) {
+    pTxCharacteristic->setValue(message.c_str());
+    pTxCharacteristic->notify();
+    delay(10);
   }
 }
 
-// ───────── WiFi 설정 저장/로드 ─────────
+// ───────── 명령 처리 ─────────
+void handleCommand(String command) {
+  StaticJsonDocument<256> doc;
+  DeserializationError error = deserializeJson(doc, command);
+  
+  if (error) {
+    sendBLEResponse("{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
+    return;
+  }
+  
+  String cmd = doc["cmd"].as<String>();
+  
+  if (cmd == "set_wifi") {
+    ssid = doc["ssid"].as<String>();
+    password = doc["password"].as<String>();
+    
+    saveWiFiConfig();
+    sendBLEResponse("{\"status\":\"success\",\"message\":\"WiFi config saved\"}");
+    
+    setup_wifi();
+    if (WiFi.status() == WL_CONNECTED) {
+      client.setServer(mqtt_server, mqtt_port);
+      client.setCallback(callback);
+      reconnect();
+      wifi_configured = true;
+      is_running = true;
+      sendBLEResponse("{\"status\":\"success\",\"message\":\"WiFi connected\"}");
+    } else {
+      sendBLEResponse("{\"status\":\"error\",\"message\":\"WiFi connection failed\"}");
+    }
+  }
+  else if (cmd == "set_mode") {
+    String mode = doc["mode"].as<String>();
+    
+    if (mode == "mpu") {
+      current_mode = MODE_MPU;
+      saveModeConfig();
+      
+      if (client.connected()) {
+        client.disconnect();
+        delay(100);
+        reconnect();
+      }
+      
+      sendBLEResponse("{\"status\":\"success\",\"message\":\"Mode set to MPU\"}");
+      Serial.println("📡 Switched to MPU mode (degree/mpu)");
+      
+    } else if (mode == "vision") {
+      current_mode = MODE_VISION;
+      saveModeConfig();
+      
+      if (client.connected()) {
+        client.disconnect();
+        delay(100);
+        reconnect();
+      }
+      
+      sendBLEResponse("{\"status\":\"success\",\"message\":\"Mode set to Vision\"}");
+      Serial.println("📡 Switched to Vision mode (degree/vision)");
+      
+    } else {
+      sendBLEResponse("{\"status\":\"error\",\"message\":\"Invalid mode\"}");
+    }
+  }
+  else if (cmd == "start") {
+    if (wifi_configured) {
+      is_running = true;
+      sendBLEResponse("{\"status\":\"success\",\"message\":\"Motor control started\"}");
+    } else {
+      sendBLEResponse("{\"status\":\"error\",\"message\":\"WiFi not configured\"}");
+    }
+  }
+  else if (cmd == "stop") {
+    is_running = false;
+    sendBLEResponse("{\"status\":\"success\",\"message\":\"Motor control stopped\"}");
+  }
+  else if (cmd == "status") {
+    StaticJsonDocument<256> response;
+    response["wifi_configured"] = wifi_configured;
+    response["is_running"] = is_running;
+    response["wifi_connected"] = (WiFi.status() == WL_CONNECTED);
+    response["mqtt_connected"] = client.connected();
+    response["mode"] = (current_mode == MODE_MPU) ? "mpu" : "vision";
+    response["ssid"] = ssid;
+    response["elbow_angle"] = current_angle_elbow;
+    response["wrist_angle"] = current_angle_wrist;
+    
+    String output;
+    serializeJson(response, output);
+    sendBLEResponse(output);
+  }
+  else if (cmd == "reset_motors") {
+    current_angle_elbow = 30.0;
+    target_angle_elbow = 30.0;
+    current_angle_wrist = 0.0;
+    target_angle_wrist = 0.0;
+    stepper.setCurrentPosition(0);
+    sendBLEResponse("{\"status\":\"success\",\"message\":\"Motors reset\"}");
+  }
+  else if (cmd == "reconnect_wifi") {
+    setup_wifi();
+    if (WiFi.status() == WL_CONNECTED) {
+      sendBLEResponse("{\"status\":\"success\",\"message\":\"WiFi reconnected\"}");
+    } else {
+      sendBLEResponse("{\"status\":\"error\",\"message\":\"WiFi reconnection failed\"}");
+    }
+  }
+  else if (cmd == "set_angles") {
+    if (doc.containsKey("elbow")) {
+      target_angle_elbow = constrain((float)doc["elbow"], 0.0, 180.0);
+    }
+    if (doc.containsKey("wrist")) {
+      target_angle_wrist = constrain((float)doc["wrist"], 0.0, 180.0);
+    }
+    sendBLEResponse("{\"status\":\"success\",\"message\":\"Target angles set\"}");
+  }
+}
+
+// ───────── WiFi 설정 ─────────
 void saveWiFiConfig() {
   preferences.putString("ssid", ssid);
   preferences.putString("password", password);
@@ -292,7 +347,7 @@ void loadWiFiConfig() {
   }
 }
 
-// ───────── 모드 설정 저장/로드 ─────────
+// ───────── 모드 설정 ─────────
 void saveModeConfig() {
   preferences.putUChar("mode", (uint8_t)current_mode);
   Serial.println("Mode saved: " + String((current_mode == MODE_MPU) ? "MPU" : "Vision"));
@@ -304,7 +359,7 @@ void loadModeConfig() {
   Serial.println("Loaded mode: " + String((current_mode == MODE_MPU) ? "MPU" : "Vision"));
 }
 
-// ───────── Wi-Fi 연결 ─────────
+// ───────── WiFi 연결 ─────────
 void setup_wifi() {
   Serial.println("Connecting to WiFi: " + ssid);
   WiFi.begin(ssid.c_str(), password.c_str());
@@ -341,7 +396,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
                 target_angle_elbow, target_angle_wrist);
 }
 
-// ───────── MQTT 재연결 (⭐ 모드별 토픽 구독) ─────────
+// ───────── MQTT 재연결 ─────────
 void reconnect() {
   if (!client.connected()) {
     Serial.print("MQTT Connecting...");
@@ -350,7 +405,6 @@ void reconnect() {
     if (client.connect(clientId.c_str())) {
       Serial.println("✅ Connected");
       
-      // ⭐ 모드에 따라 다른 토픽 구독
       if (current_mode == MODE_MPU) {
         client.subscribe(topic_mpu);
         Serial.println("📡 Subscribed to: degree/mpu");

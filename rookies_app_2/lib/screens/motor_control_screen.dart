@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../services/bluetooth_service.dart';
+import '../services/bluetooth_manager.dart'; // ⭐ 이름 변경
 
 class MotorControlScreen extends StatefulWidget {
   const MotorControlScreen({Key? key}) : super(key: key);
@@ -31,15 +31,15 @@ class _MotorControlScreenState extends State<MotorControlScreen> {
     }
 
     try {
-      final btService = context.read<BluetoothService>();
-      await btService.setWiFi(
+      final btManager = context.read<BluetoothManager>(); // ⭐ 이름 변경
+      await btManager.setWiFi(
         _ssidController.text,
         _passwordController.text,
       );
       _showMessage('WiFi configured successfully');
 
       await Future.delayed(const Duration(seconds: 2));
-      await btService.getStatus();
+      await btManager.getStatus();
     } catch (e) {
       _showMessage('Error: $e');
     }
@@ -47,8 +47,8 @@ class _MotorControlScreenState extends State<MotorControlScreen> {
 
   Future<void> _setMode(String mode) async {
     try {
-      final btService = context.read<BluetoothService>();
-      await btService.setMode(mode);
+      final btManager = context.read<BluetoothManager>(); // ⭐ 이름 변경
+      await btManager.setMode(mode);
       setState(() => _selectedMode = mode);
       _showMessage('Mode set to ${mode.toUpperCase()}');
     } catch (e) {
@@ -58,12 +58,12 @@ class _MotorControlScreenState extends State<MotorControlScreen> {
 
   Future<void> _toggleRunning() async {
     try {
-      final btService = context.read<BluetoothService>();
+      final btManager = context.read<BluetoothManager>(); // ⭐ 이름 변경
       if (_isRunning) {
-        await btService.stop();
+        await btManager.stop();
         _showMessage('Motor control stopped');
       } else {
-        await btService.start();
+        await btManager.start();
         _showMessage('Motor control started');
       }
       setState(() => _isRunning = !_isRunning);
@@ -74,8 +74,8 @@ class _MotorControlScreenState extends State<MotorControlScreen> {
 
   Future<void> _resetMotors() async {
     try {
-      final btService = context.read<BluetoothService>();
-      await btService.resetMotors();
+      final btManager = context.read<BluetoothManager>(); // ⭐ 이름 변경
+      await btManager.resetMotors();
       setState(() {
         _elbowAngle = 30.0;
         _wristAngle = 0.0;
@@ -88,8 +88,8 @@ class _MotorControlScreenState extends State<MotorControlScreen> {
 
   Future<void> _getStatus() async {
     try {
-      final btService = context.read<BluetoothService>();
-      await btService.getStatus();
+      final btManager = context.read<BluetoothManager>(); // ⭐ 이름 변경
+      await btManager.getStatus();
       _showMessage('Status requested');
     } catch (e) {
       _showMessage('Error: $e');
@@ -98,8 +98,8 @@ class _MotorControlScreenState extends State<MotorControlScreen> {
 
   Future<void> _reconnectWiFi() async {
     try {
-      final btService = context.read<BluetoothService>();
-      await btService.reconnectWiFi();
+      final btManager = context.read<BluetoothManager>(); // ⭐ 이름 변경
+      await btManager.reconnectWiFi();
       _showMessage('Reconnecting to WiFi...');
     } catch (e) {
       _showMessage('Error: $e');
@@ -108,8 +108,8 @@ class _MotorControlScreenState extends State<MotorControlScreen> {
 
   Future<void> _setManualAngles() async {
     try {
-      final btService = context.read<BluetoothService>();
-      await btService.setAngles(_elbowAngle, _wristAngle);
+      final btManager = context.read<BluetoothManager>(); // ⭐ 이름 변경
+      await btManager.setAngles(_elbowAngle, _wristAngle);
       _showMessage('Manual angles set');
     } catch (e) {
       _showMessage('Error: $e');
@@ -128,17 +128,18 @@ class _MotorControlScreenState extends State<MotorControlScreen> {
       appBar: AppBar(
         title: const Text('Motor Control'),
         actions: [
-          Consumer<BluetoothService>(
-            builder: (context, btService, _) {
+          Consumer<BluetoothManager>(
+            // ⭐ 이름 변경
+            builder: (context, btManager, _) {
               return IconButton(
                 icon: Icon(
-                  btService.isConnected
+                  btManager.isConnected
                       ? Icons.bluetooth_connected
                       : Icons.bluetooth_disabled,
                 ),
-                onPressed: btService.isConnected
+                onPressed: btManager.isConnected
                     ? () async {
-                        await btService.disconnect();
+                        await btManager.disconnect();
                         Navigator.pop(context);
                       }
                     : null,
@@ -366,8 +367,9 @@ class _MotorControlScreenState extends State<MotorControlScreen> {
             const SizedBox(height: 16),
 
             // 상태 표시
-            Consumer<BluetoothService>(
-              builder: (context, btService, _) {
+            Consumer<BluetoothManager>(
+              // ⭐ 이름 변경
+              builder: (context, btManager, _) {
                 return Card(
                   color: Colors.blue.shade50,
                   child: Padding(
@@ -378,16 +380,16 @@ class _MotorControlScreenState extends State<MotorControlScreen> {
                         Row(
                           children: [
                             Icon(
-                              btService.isConnected
+                              btManager.isConnected
                                   ? Icons.check_circle
                                   : Icons.error,
-                              color: btService.isConnected
+                              color: btManager.isConnected
                                   ? Colors.green
                                   : Colors.red,
                             ),
                             const SizedBox(width: 8),
                             Text(
-                              'Connected to: ${btService.selectedDevice}',
+                              'Connected to: ${btManager.selectedDevice}',
                               style: const TextStyle(
                                 fontWeight: FontWeight.bold,
                               ),

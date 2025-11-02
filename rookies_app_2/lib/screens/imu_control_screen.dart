@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../services/bluetooth_service.dart';
+import '../services/bluetooth_manager.dart'; // ⭐ 이름 변경
 
 class IMUControlScreen extends StatefulWidget {
   const IMUControlScreen({Key? key}) : super(key: key);
@@ -29,16 +29,15 @@ class _IMUControlScreenState extends State<IMUControlScreen> {
     }
 
     try {
-      final btService = context.read<BluetoothService>();
-      await btService.setWiFi(
+      final btManager = context.read<BluetoothManager>(); // ⭐ 이름 변경
+      await btManager.setWiFi(
         _ssidController.text,
         _passwordController.text,
       );
       _showMessage('WiFi configured successfully');
 
-      // 잠시 후 상태 확인
       await Future.delayed(const Duration(seconds: 2));
-      await btService.getStatus();
+      await btManager.getStatus();
     } catch (e) {
       _showMessage('Error: $e');
     }
@@ -47,11 +46,10 @@ class _IMUControlScreenState extends State<IMUControlScreen> {
   Future<void> _calibrate() async {
     setState(() => _isCalibrating = true);
     try {
-      final btService = context.read<BluetoothService>();
-      await btService.startCalibration();
+      final btManager = context.read<BluetoothManager>(); // ⭐ 이름 변경
+      await btManager.startCalibration();
       _showMessage('Calibration started. Keep sensor still...');
 
-      // Calibration은 약 1초 소요
       await Future.delayed(const Duration(seconds: 2));
       _showMessage('Calibration completed');
     } catch (e) {
@@ -63,12 +61,12 @@ class _IMUControlScreenState extends State<IMUControlScreen> {
 
   Future<void> _toggleRunning() async {
     try {
-      final btService = context.read<BluetoothService>();
+      final btManager = context.read<BluetoothManager>(); // ⭐ 이름 변경
       if (_isRunning) {
-        await btService.stop();
+        await btManager.stop();
         _showMessage('Sensor stopped');
       } else {
-        await btService.start();
+        await btManager.start();
         _showMessage('Sensor started');
       }
       setState(() => _isRunning = !_isRunning);
@@ -79,8 +77,8 @@ class _IMUControlScreenState extends State<IMUControlScreen> {
 
   Future<void> _getStatus() async {
     try {
-      final btService = context.read<BluetoothService>();
-      await btService.getStatus();
+      final btManager = context.read<BluetoothManager>(); // ⭐ 이름 변경
+      await btManager.getStatus();
       _showMessage('Status requested');
     } catch (e) {
       _showMessage('Error: $e');
@@ -89,8 +87,8 @@ class _IMUControlScreenState extends State<IMUControlScreen> {
 
   Future<void> _reconnectWiFi() async {
     try {
-      final btService = context.read<BluetoothService>();
-      await btService.reconnectWiFi();
+      final btManager = context.read<BluetoothManager>(); // ⭐ 이름 변경
+      await btManager.reconnectWiFi();
       _showMessage('Reconnecting to WiFi...');
     } catch (e) {
       _showMessage('Error: $e');
@@ -109,17 +107,18 @@ class _IMUControlScreenState extends State<IMUControlScreen> {
       appBar: AppBar(
         title: const Text('IMU Sensor Control'),
         actions: [
-          Consumer<BluetoothService>(
-            builder: (context, btService, _) {
+          Consumer<BluetoothManager>(
+            // ⭐ 이름 변경
+            builder: (context, btManager, _) {
               return IconButton(
                 icon: Icon(
-                  btService.isConnected
+                  btManager.isConnected
                       ? Icons.bluetooth_connected
                       : Icons.bluetooth_disabled,
                 ),
-                onPressed: btService.isConnected
+                onPressed: btManager.isConnected
                     ? () async {
-                        await btService.disconnect();
+                        await btManager.disconnect();
                         Navigator.pop(context);
                       }
                     : null,
@@ -133,7 +132,6 @@ class _IMUControlScreenState extends State<IMUControlScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // WiFi 설정 섹션
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
@@ -179,10 +177,7 @@ class _IMUControlScreenState extends State<IMUControlScreen> {
                 ),
               ),
             ),
-
             const SizedBox(height: 16),
-
-            // Calibration 섹션
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
@@ -223,10 +218,7 @@ class _IMUControlScreenState extends State<IMUControlScreen> {
                 ),
               ),
             ),
-
             const SizedBox(height: 16),
-
-            // 제어 버튼들
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
@@ -272,12 +264,10 @@ class _IMUControlScreenState extends State<IMUControlScreen> {
                 ),
               ),
             ),
-
             const SizedBox(height: 16),
-
-            // 상태 표시
-            Consumer<BluetoothService>(
-              builder: (context, btService, _) {
+            Consumer<BluetoothManager>(
+              // ⭐ 이름 변경
+              builder: (context, btManager, _) {
                 return Card(
                   color: Colors.blue.shade50,
                   child: Padding(
@@ -288,16 +278,16 @@ class _IMUControlScreenState extends State<IMUControlScreen> {
                         Row(
                           children: [
                             Icon(
-                              btService.isConnected
+                              btManager.isConnected
                                   ? Icons.check_circle
                                   : Icons.error,
-                              color: btService.isConnected
+                              color: btManager.isConnected
                                   ? Colors.green
                                   : Colors.red,
                             ),
                             const SizedBox(width: 8),
                             Text(
-                              'Connected to: ${btService.selectedDevice}',
+                              'Connected to: ${btManager.selectedDevice}',
                               style: const TextStyle(
                                 fontWeight: FontWeight.bold,
                               ),
